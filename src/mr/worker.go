@@ -41,14 +41,13 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	args := TaskResponse{}
+	reply := TaskReply{}
+	CallGetTask(&args, &reply)
 	for {
-		args := TaskResponse{}
-		reply := TaskReply{}
-		CallGetTask(&args, &reply)
 		bucket := make([][]KeyValue, reply.NumReduceTask)
 		filename := reply.ReplyTask.FileName
 		if filename != "" {
-			fmt.Println(">>>> map task")
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
@@ -78,61 +77,57 @@ func Worker(mapf func(string, string) []KeyValue,
 				outFileName := "mr-" + id + "-" + strconv.Itoa(i)
 				os.Rename(tempFile.Name(), outFileName)
 			}
-			reply.MapTaskFinish <- true
+			CallTaskFinish()
 		} else {
-			fmt.Println(">>>>>>>>>> reduce task")
 			id := strconv.Itoa(reply.ReplyTask.IDMap)
-			if len(reply.MapTaskFinish) == reply.NumMapTask {
-				fmt.Println(">>>>>>>> reduce task start")
-				intermediate := []KeyValue{}
-				for i := 0; i < reply.NumMapTask; i++ {
-					mapFileName := "mr-" + strconv.Itoa(i) + "-" + id
-					file, err := os.Open(mapFileName)
-					if err != nil {
-						log.Fatalf("Cannot open the reduce task %v", mapFileName)
-					}
-					dnc := json.NewDecoder(file)
-					for {
-						var kv []KeyValue
-						if err := dnc.Decode(&kv); err != nil {
-							break
-						}
-						intermediate = append(intermediate, kv...)
-					}
-				}
-				sort.Sort(ByKey(intermediate))
-
-				outFile := "mr-out-" + id
-				tmpFile, err := ioutil.TempFile("", "mr-reduce-*")
+			intermediate := []KeyValue{}
+			for i := 0; i < reply.NumMapTask; i++ {
+				mapFileName := "mr-" + strconv.Itoa(i) + "-" + id
+				file, err := os.Open(mapFileName)
 				if err != nil {
-					log.Fatalf("Could not create temporary file: %v", tmpFile)
+					log.Fatalf("Cannot open the reduce task %v", mapFileName)
 				}
-
-				i := 0
-				for i < len(intermediate) {
-					j := i + 1
-					for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-						j++
+				dnc := json.NewDecoder(file)
+				for {
+					var kv []KeyValue
+					if err := dnc.Decode(&kv); err != nil {
+						break
 					}
-					values := []string{}
-					for k := i; k < j; k++ {
-						values = append(values, intermediate[k].Value)
-					}
-					output := reducef(intermediate[i].Key, values)
-
-					fmt.Fprintf(tmpFile, "%v %v\n", intermediate[i].Key, output)
-
-					i = j
+					intermediate = append(intermediate, kv...)
 				}
-				tmpFile.Close()
-				os.Rename(tmpFile.Name(), outFile)
 			}
-			reply.ReduceTaskFinish <- true
+			sort.Sort(ByKey(intermediate))
+
+			outFile := "mr-out-" + id
+			tmpFile, err := ioutil.TempFile("", "mr-reduce-*")
+			if err != nil {
+				log.Fatalf("Could not create temporary file: %v", tmpFile)
+			}
+
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+
+				fmt.Fprintf(tmpFile, "%v %v\n", intermediate[i].Key, output)
+
+				i = j
+			}
+			tmpFile.Close()
+			os.Rename(tmpFile.Name(), outFile)
+			CallTaskFinish()
+			if len(reply.ReduceTaskFinish) == reply.NumReduceTask {
+				break
+			}
 		}
 
-		if len(reply.ReduceTaskFinish) == reply.NumReduceTask {
-			break
-		}
 	}
 
 	// Your worker implementation here.
@@ -171,10 +166,25 @@ func CallExample() {
 }
 
 func CallGetTask(args *TaskResponse, reply *TaskReply) {
-	ok := call("Coordinator.GetMapTask", &args, &reply)
+	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {
 		// fmt.Printf("reply.Y %v\n", reply.ReplyTask.FileName)
 		fmt.Println("call get task ok")
+	} else {
+		fmt.Printf("call failed!\n")
+	}
+	// if !ok {
+	// 	fmt.Printf("call failed!\n")
+	// }
+}
+
+func CallTaskFinish() {
+	args := TaskResponse{}
+	reply := TaskReply{}
+	ok := call("Coordinator.TaskFinish", &args, &reply)
+	if ok {
+		// fmt.Printf("reply.Y %v\n", reply.ReplyTask.FileName)
+		fmt.Println("call task finish ok")
 	} else {
 		fmt.Printf("call failed!\n")
 	}

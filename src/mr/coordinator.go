@@ -21,6 +21,7 @@ type Task struct {
 type Coordinator struct {
 	// Your definitions here.
 	numWorkers       int
+	NumMapTask       int
 	mapTasks         chan Task
 	reduceTasks      chan Task
 	nReduce          int
@@ -32,14 +33,29 @@ type Coordinator struct {
 
 // Your code here -- RPC handlers for the worker to call.
 
-func (c *Coordinator) GetMapTask(args *TaskResponse, reply *TaskReply) error {
-	mapTask, ok := <-c.mapTasks
-	if ok {
-		reply.ReplyTask = mapTask
+func (c *Coordinator) GetTask(args *TaskResponse, reply *TaskReply) error {
+	if len(c.MapTaskFinish) != c.NumMapTask {
+		mapTask, ok := <-c.mapTasks
+		if ok {
+			reply.ReplyTask = mapTask
+		}
+	} else {
+		reduceTask, rok := <-c.reduceTasks
+		if rok {
+			reply.ReplyTask = reduceTask
+		}
 	}
 	reply.NumReduceTask = c.nReduce
-	reply.MapTaskFinish = c.MapTaskFinish
-	reply.ReduceTaskFinish = c.ReduceTaskFinish
+	return nil
+}
+
+func (c *Coordinator) TaskFinish(args *TaskResponse, reply *TaskReply) error {
+	if len(c.MapTaskFinish) != c.NumMapTask {
+		c.MapTaskFinish <- true
+	} else {
+		c.ReduceTaskFinish <- true
+	}
+
 	return nil
 }
 
@@ -99,6 +115,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		MapTaskFinish:    make(chan bool, len(files)),
 		ReduceTaskFinish: make(chan bool, nReduce),
 		nReduce:          nReduce,
+		NumMapTask:       len(files),
 		taskPhase:        0,
 		// mutex:       &sync.Mutex{},
 	}
