@@ -1,15 +1,29 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+)
 
+type Task struct {
+	FileName string
+	IDMap    int
+	IDReduce int
+	TaskType int // 0 map 1 reduce 2 none
+}
 
 type Coordinator struct {
 	// Your definitions here.
-
+	State            int
+	NumMapTask       int
+	NumReduceTask    int
+	MapTask          chan Task
+	ReduceTask       chan Task
+	MapTaskFinish    chan bool
+	ReduceTaskFinish chan bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -24,6 +38,39 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+func (c *Coordinator) GetTask(args *TaskRequest, reply *TaskReply) error {
+	if len(c.MapTaskFinish) != c.NumMapTask {
+		mapTask, ok := <-c.MapTask
+		if ok {
+			reply.XTask = mapTask
+		}
+	} else {
+		reduceTask, ok := <-c.ReduceTask
+		if ok {
+			reply.XTask = reduceTask
+		}
+	}
+	reply.NumMapTask = c.NumMapTask
+	reply.NumReduceTask = c.NumReduceTask
+	return nil
+}
+
+func (c *Coordinator) FinishTask(args *TaskRequest, reply *TaskReply) error {
+	if len(c.MapTaskFinish) != c.NumMapTask {
+		c.MapTaskFinish <- true
+	} else {
+		c.ReduceTaskFinish <- true
+	}
+	return nil
+}
+
+func (c *Coordinator) EndTask(args *TaskRequest, reply *TaskReply) (int, error) {
+	if len(c.ReduceTaskFinish) == c.NumReduceTask {
+		return 1, nil
+	} else {
+		return 0, nil
+	}
+}
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -48,8 +95,12 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := false
 
-	// Your code here.
+	// time.Sleep(time.Second)
+	if len(c.ReduceTaskFinish) == c.NumReduceTask {
+		ret = true
+	}
 
+	// Your code here.
 
 	return ret
 }
@@ -60,10 +111,33 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		State:            0,
+		NumMapTask:       len(files),
+		NumReduceTask:    nReduce,
+		MapTask:          make(chan Task, len(files)),
+		ReduceTask:       make(chan Task, nReduce),
+		MapTaskFinish:    make(chan bool, len(files)),
+		ReduceTaskFinish: make(chan bool, nReduce),
+	}
+
+	for id, file := range files {
+		c.MapTask <- Task{
+			FileName: file,
+			IDMap:    id,
+			TaskType: 0,
+		}
+	}
+
+	for i := 0; i < nReduce; i++ {
+		c.ReduceTask <- Task{
+			IDReduce: i,
+			TaskType: 1,
+			FileName: "",
+		}
+	}
 
 	// Your code here.
-
 
 	c.server()
 	return &c
