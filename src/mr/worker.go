@@ -49,8 +49,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply := TaskReply{}
 		CallGetTask(&args, &reply)
 		filename := reply.XTask.FileName
-
-		if filename != "" {
+		state := reply.State
+		if state == 0 {
 			id := strconv.Itoa(reply.XTask.IDMap)
 			file, err := os.Open(filename)
 			if err != nil {
@@ -85,7 +85,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				os.Rename(tempFile.Name(), "mr-"+id+"-"+strconv.Itoa(i))
 			}
 			CallFinishTask()
-		} else {
+		} else if state == 1 {
 			id := strconv.Itoa(reply.XTask.IDReduce)
 			intermediate := []KeyValue{}
 			// X := reply.XTask.IDMap
@@ -133,6 +133,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			os.Rename(tempReduceFile.Name(), oname)
 
 			CallFinishTask()
+		} else {
+			break
 		}
 
 	}
@@ -173,6 +175,7 @@ func CallExample() {
 }
 
 func CallGetTask(args *TaskRequest, reply *TaskReply) {
+	// call("Coordinator.GetTask", &args, &reply)
 	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {
 		fmt.Println("call get task ok")
@@ -184,6 +187,7 @@ func CallGetTask(args *TaskRequest, reply *TaskReply) {
 func CallFinishTask() {
 	args := TaskRequest{}
 	reply := TaskReply{}
+	// call("Coordinator.FinishTask", &args, &reply)
 	ok := call("Coordinator.FinishTask", &args, &reply)
 	if ok {
 		fmt.Println("call finish task ok")
@@ -195,6 +199,7 @@ func CallFinishTask() {
 func CallEndTask() {
 	args := TaskRequest{}
 	reply := TaskReply{}
+	// call("Coordinator.FinishTask", &args, &reply)
 	ok := call("Coordinator.FinishTask", &args, &reply)
 	if ok {
 		fmt.Println("call end task ok")

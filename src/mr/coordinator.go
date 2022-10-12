@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"time"
 )
 
 type Task struct {
@@ -17,7 +18,7 @@ type Task struct {
 
 type Coordinator struct {
 	// Your definitions here.
-	State            int
+	State            int // 0 map 1 reduce 2 finish
 	NumMapTask       int
 	NumReduceTask    int
 	MapTask          chan Task
@@ -44,22 +45,31 @@ func (c *Coordinator) GetTask(args *TaskRequest, reply *TaskReply) error {
 		if ok {
 			reply.XTask = mapTask
 		}
-	} else {
+		c.State = 0
+	} else if len(c.ReduceTaskFinish) != c.NumReduceTask {
 		reduceTask, ok := <-c.ReduceTask
+		c.State = 1
 		if ok {
 			reply.XTask = reduceTask
 		}
 	}
 	reply.NumMapTask = c.NumMapTask
 	reply.NumReduceTask = c.NumReduceTask
+	reply.State = c.State
 	return nil
 }
 
 func (c *Coordinator) FinishTask(args *TaskRequest, reply *TaskReply) error {
 	if len(c.MapTaskFinish) != c.NumMapTask {
 		c.MapTaskFinish <- true
-	} else {
+		if len(c.MapTaskFinish) == c.NumMapTask {
+			c.State = 1
+		}
+	} else if len(c.ReduceTaskFinish) != c.NumReduceTask {
 		c.ReduceTaskFinish <- true
+		if len(c.ReduceTaskFinish) == c.NumReduceTask {
+			c.State = 2
+		}
 	}
 	return nil
 }
@@ -97,6 +107,8 @@ func (c *Coordinator) Done() bool {
 
 	// time.Sleep(time.Second)
 	if len(c.ReduceTaskFinish) == c.NumReduceTask {
+		c.State = 2
+		time.Sleep(time.Second)
 		ret = true
 	}
 

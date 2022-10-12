@@ -31,11 +31,10 @@ type TaskRequest struct {
 }
 
 type TaskReply struct {
-	XTask            Task
-	NumMapTask       int
-	NumReduceTask    int
-	MapTaskFinish    chan bool
-	ReduceTaskFinish chan bool
+	XTask         Task
+	NumMapTask    int
+	NumReduceTask int
+	State         int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
