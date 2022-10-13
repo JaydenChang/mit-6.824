@@ -48,17 +48,19 @@ func Worker(mapf func(string, string) []KeyValue,
 		args := TaskRequest{}
 		reply := TaskReply{}
 		CallGetTask(&args, &reply)
-		filename := reply.XTask.FileName
+		CurNumMapTask := reply.CurNumMapTask
+		CurNumReduceTask := reply.CurNumReduceTask
 		state := reply.State
-		if state == 0 {
+		if state == 0 && CurNumMapTask >= 0 {
+			filename := reply.XTask.FileName
 			id := strconv.Itoa(reply.XTask.IDMap)
 			file, err := os.Open(filename)
 			if err != nil {
-				log.Fatalf("cannot open %v", filename)
+				log.Fatalf("cannot open map file %v", filename)
 			}
 			content, err := ioutil.ReadAll(file)
 			if err != nil {
-				log.Fatalf("cannot read %v", filename)
+				log.Fatalf("cannot read map file %v", filename)
 			}
 			file.Close()
 			kva := mapf(filename, string(content))
@@ -85,13 +87,12 @@ func Worker(mapf func(string, string) []KeyValue,
 				os.Rename(tempFile.Name(), "mr-"+id+"-"+strconv.Itoa(i))
 			}
 			CallFinishTask()
-		} else if state == 1 {
+		} else if state == 1 && CurNumReduceTask >= 0 {
 			id := strconv.Itoa(reply.XTask.IDReduce)
 			intermediate := []KeyValue{}
 			// X := reply.XTask.IDMap
 			for i := 0; i < reply.NumMapTask; i++ {
 				mapFileName := "mr-" + strconv.Itoa(i) + "-" + id
-				// inputFile, err := os.OpenFile(mapFileName, os.O_RDONLY, 0777)
 				inputFile, err := os.Open(mapFileName)
 				if err != nil {
 					log.Fatalf("error opening map file: %v\n", mapFileName)
@@ -136,6 +137,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		} else {
 			break
 		}
+		// time.Sleep(time.Second)
 
 	}
 	// Your worker implementation here.

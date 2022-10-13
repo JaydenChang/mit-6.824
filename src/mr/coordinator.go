@@ -18,9 +18,10 @@ type Task struct {
 
 type Coordinator struct {
 	// Your definitions here.
-	State            int // 0 map 1 reduce 2 finish
-	NumMapTask       int
-	NumReduceTask    int
+	State         int // 0 map 1 reduce 2 finish
+	NumMapTask    int
+	NumReduceTask int
+	// mutex            sync.Mutex
 	MapTask          chan Task
 	ReduceTask       chan Task
 	MapTaskFinish    chan bool
@@ -40,17 +41,28 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) GetTask(args *TaskRequest, reply *TaskReply) error {
-	if len(c.MapTaskFinish) != c.NumMapTask {
+	if len(c.MapTask) != 0 {
 		mapTask, ok := <-c.MapTask
 		if ok {
 			reply.XTask = mapTask
 		}
-		c.State = 0
-	} else if len(c.ReduceTaskFinish) != c.NumReduceTask {
-		reduceTask, ok := <-c.ReduceTask
-		c.State = 1
-		if ok {
-			reply.XTask = reduceTask
+		reply.CurNumMapTask = len(c.MapTask)
+		reply.CurNumReduceTask = len(c.ReduceTask)
+	} else {
+		reply.CurNumMapTask = -1
+		reply.CurNumReduceTask = len(c.ReduceTask)
+	}
+	if c.State == 1 {
+		if len(c.ReduceTask) != 0 {
+			reduceTask, ok := <-c.ReduceTask
+			if ok {
+				reply.XTask = reduceTask
+			}
+			reply.CurNumMapTask = -1
+			reply.CurNumReduceTask = len(c.ReduceTask)
+		} else {
+			reply.CurNumMapTask = -1
+			reply.CurNumReduceTask = -1
 		}
 	}
 	reply.NumMapTask = c.NumMapTask
@@ -107,7 +119,7 @@ func (c *Coordinator) Done() bool {
 
 	// time.Sleep(time.Second)
 	if len(c.ReduceTaskFinish) == c.NumReduceTask {
-		c.State = 2
+		// c.State = 2
 		time.Sleep(time.Second)
 		ret = true
 	}
