@@ -1,11 +1,14 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,19 +16,23 @@ type Task struct {
 	FileName string
 	IDMap    int
 	IDReduce int
-	TaskType int // 0 map 1 reduce 2 none
 }
 
 type Coordinator struct {
 	// Your definitions here.
-	State         int // 0 map 1 reduce 2 finish
-	NumMapTask    int
-	NumReduceTask int
-	// mutex            sync.Mutex
-	MapTask          chan Task
-	ReduceTask       chan Task
-	MapTaskFinish    chan bool
-	ReduceTaskFinish chan bool
+	State          int32 // 0 map 1 reduce 2 finish
+	NumMapTask     int
+	NumReduceTask  int
+	MapTask        chan Task
+	ReduceTask     chan Task
+	MapTaskTime    sync.Map
+	ReduceTaskTime sync.Map
+	files          []string
+}
+
+type TimeStamp struct {
+	Time   int64
+	Finish bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -41,57 +48,116 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) GetTask(args *TaskRequest, reply *TaskReply) error {
-	if len(c.MapTask) != 0 {
-		mapTask, ok := <-c.MapTask
-		if ok {
-			reply.XTask = mapTask
+	state := atomic.LoadInt32(&c.State)
+	if state == 0 {
+		if len(c.MapTask) != 0 {
+			mapTask, ok := <-c.MapTask
+			if ok {
+				reply.XTask = mapTask
+			}
+			reply.CurNumMapTask = len(c.MapTask)
+		} else {
+			reply.CurNumMapTask = -1
 		}
-		reply.CurNumMapTask = len(c.MapTask)
 		reply.CurNumReduceTask = len(c.ReduceTask)
-	} else {
-		reply.CurNumMapTask = -1
-		reply.CurNumReduceTask = len(c.ReduceTask)
-	}
-	if c.State == 1 {
+	} else if state == 1 {
 		if len(c.ReduceTask) != 0 {
 			reduceTask, ok := <-c.ReduceTask
 			if ok {
 				reply.XTask = reduceTask
 			}
-			reply.CurNumMapTask = -1
 			reply.CurNumReduceTask = len(c.ReduceTask)
 		} else {
-			reply.CurNumMapTask = -1
 			reply.CurNumReduceTask = -1
 		}
+		reply.CurNumMapTask = -1
 	}
 	reply.NumMapTask = c.NumMapTask
 	reply.NumReduceTask = c.NumReduceTask
-	reply.State = c.State
+	reply.State = state
 	return nil
 }
 
-func (c *Coordinator) FinishTask(args *TaskRequest, reply *TaskReply) error {
-	if len(c.MapTaskFinish) != c.NumMapTask {
-		c.MapTaskFinish <- true
-		if len(c.MapTaskFinish) == c.NumMapTask {
-			c.State = 1
+// func lenSyncMap(m *sync.Map) int {
+// 	i := 0
+// 	m.Range(func(key, value interface{}) bool {
+// 		i++
+// 		return true
+// 	})
+// 	return i
+// }
+
+func lenFinishTask(m *sync.Map) int {
+	i := 0
+	m.Range(func(key, value interface{}) bool {
+
+		if value.(TimeStamp).Finish {
+			i++
 		}
-	} else if len(c.ReduceTaskFinish) != c.NumReduceTask {
-		c.ReduceTaskFinish <- true
-		if len(c.ReduceTaskFinish) == c.NumReduceTask {
-			c.State = 2
+		return true
+	})
+	return i
+}
+
+func (c *Coordinator) FinishTask(args *Task, reply *TaskReply) error {
+	time_now := time.Now().Unix()
+	if lenFinishTask(&c.MapTaskTime) != c.NumMapTask {
+		start_time, _ := c.MapTaskTime.Load(args.IDMap)
+		if time_now-start_time.(TimeStamp).Time > 10 {
+			return nil
+		}
+		c.MapTaskTime.Store(args.IDMap, TimeStamp{time_now, true})
+		if lenFinishTask(&c.MapTaskTime) == c.NumMapTask {
+			atomic.StoreInt32(&c.State, 1)
+			for i := 0; i < c.NumReduceTask; i++ {
+				c.ReduceTask <- Task{IDReduce: i}
+				c.ReduceTaskTime.Store(i, TimeStamp{time_now, false})
+			}
+		}
+	} else if lenFinishTask(&c.ReduceTaskTime) != c.NumReduceTask {
+		start_time, _ := c.ReduceTaskTime.Load(args.IDMap)
+		if time_now-start_time.(TimeStamp).Time > 10 {
+			return nil
+		}
+		c.ReduceTaskTime.Store(args.IDReduce, TimeStamp{time_now, true})
+		if lenFinishTask(&c.ReduceTaskTime) == c.NumReduceTask {
+			atomic.StoreInt32(&c.State, 2)
 		}
 	}
 	return nil
 }
 
-func (c *Coordinator) EndTask(args *TaskRequest, reply *TaskReply) (int, error) {
-	if len(c.ReduceTaskFinish) == c.NumReduceTask {
-		return 1, nil
-	} else {
-		return 0, nil
+func (c *Coordinator) TimeTick() {
+	state := atomic.LoadInt32(&c.State)
+	time_now := time.Now().Unix()
+
+	if state == 0 {
+		for i := 0; i < c.NumMapTask; i++ {
+			tmp, _ := c.MapTaskTime.Load(i)
+			if !tmp.(TimeStamp).Finish && time_now-tmp.(TimeStamp).Time > 10 {
+				fmt.Println("map crash")
+				c.MapTask <- Task{FileName: c.files[i], IDMap: i}
+				c.MapTaskTime.Store(i, TimeStamp{time_now, false})
+			}
+		}
+	} else if state == 1 {
+		for i := 0; i < c.NumReduceTask; i++ {
+			tmp, _ := c.ReduceTaskTime.Load(i)
+			if !tmp.(TimeStamp).Finish && time_now-tmp.(TimeStamp).Time > 10 {
+				fmt.Println("worker crash")
+				c.ReduceTask <- Task{IDReduce: i}
+				c.ReduceTaskTime.Store(i, TimeStamp{time_now, false})
+			}
+		}
 	}
+}
+
+func (c *Coordinator) EndTask(args *TaskRequest, reply *TaskReply) {
+	// if len(c.ReduceTaskFinish) == c.NumReduceTask {
+	// 	return 1, nil
+	// } else {
+	// 	return 0, nil
+	// }
 }
 
 //
@@ -115,12 +181,10 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
+	c.TimeTick()
 	ret := false
 
-	// time.Sleep(time.Second)
-	if len(c.ReduceTaskFinish) == c.NumReduceTask {
-		// c.State = 2
-		time.Sleep(time.Second)
+	if lenFinishTask(&c.ReduceTaskTime) == c.NumReduceTask {
 		ret = true
 	}
 
@@ -136,29 +200,18 @@ func (c *Coordinator) Done() bool {
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		State:            0,
-		NumMapTask:       len(files),
-		NumReduceTask:    nReduce,
-		MapTask:          make(chan Task, len(files)),
-		ReduceTask:       make(chan Task, nReduce),
-		MapTaskFinish:    make(chan bool, len(files)),
-		ReduceTaskFinish: make(chan bool, nReduce),
+		State:         0,
+		NumMapTask:    len(files),
+		NumReduceTask: nReduce,
+		MapTask:       make(chan Task, len(files)),
+		ReduceTask:    make(chan Task, nReduce),
+		files:         files,
 	}
 
+	time_now := time.Now().Unix()
 	for id, file := range files {
-		c.MapTask <- Task{
-			FileName: file,
-			IDMap:    id,
-			TaskType: 0,
-		}
-	}
-
-	for i := 0; i < nReduce; i++ {
-		c.ReduceTask <- Task{
-			IDReduce: i,
-			TaskType: 1,
-			FileName: "",
-		}
+		c.MapTask <- Task{FileName: file, IDMap: id}
+		c.MapTaskTime.Store(id, TimeStamp{time_now, false})
 	}
 
 	// Your code here.

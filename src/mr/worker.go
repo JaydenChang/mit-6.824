@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 )
 
 //
@@ -86,7 +87,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				tempFile.Close()
 				os.Rename(tempFile.Name(), "mr-"+id+"-"+strconv.Itoa(i))
 			}
-			CallFinishTask()
+			CallFinishTask(&reply.XTask)
 		} else if state == 1 && CurNumReduceTask >= 0 {
 			id := strconv.Itoa(reply.XTask.IDReduce)
 			intermediate := []KeyValue{}
@@ -133,11 +134,13 @@ func Worker(mapf func(string, string) []KeyValue,
 			tempReduceFile.Close()
 			os.Rename(tempReduceFile.Name(), oname)
 
-			CallFinishTask()
-		} else {
+			CallFinishTask(&reply.XTask)
+		} else if state == 2 {
 			break
+		} else {
+			continue
 		}
-		// time.Sleep(time.Second)
+		time.Sleep(time.Second)
 
 	}
 	// Your worker implementation here.
@@ -186,8 +189,8 @@ func CallGetTask(args *TaskRequest, reply *TaskReply) {
 	}
 }
 
-func CallFinishTask() {
-	args := TaskRequest{}
+func CallFinishTask(args *Task) {
+	// args := TaskRequest{}
 	reply := TaskReply{}
 	// call("Coordinator.FinishTask", &args, &reply)
 	ok := call("Coordinator.FinishTask", &args, &reply)
