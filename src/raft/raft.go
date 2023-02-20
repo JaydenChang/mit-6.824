@@ -272,10 +272,8 @@ func (rf *Raft) StartElection() {
 			reply := RequestVoteReply{}
 			fmt.Printf("#### term %d, machine %d send request to machine %d\n", rf.CurrentTerm, args.CandidateID, server)
 			if rf.NodeState == CANDIDATE && rf.sendRequestVote(server, &args, &reply) {
-				if rf.NodeState != CANDIDATE {
-					fmt.Println("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
-				}
 				if rf.NodeState != CANDIDATE && args.CandidateTerm != rf.CurrentTerm {
+					fmt.Println("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
 					return
 				}
 				rf.mu.Lock()
