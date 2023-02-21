@@ -219,10 +219,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		fmt.Println("<<<<<<<<<<<<<< request fail at term", rf.CurrentTerm)
 		return
 	}
-	if args.CandidateTerm > rf.CurrentTerm {
-		rf.CurrentTerm = args.CandidateTerm
-		rf.UpdateState(FOLLOWER)
-	}
 	reply.VoteGranted = false
 	reply.CurrentTerm = rf.CurrentTerm
 	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateID {
@@ -232,6 +228,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// send vote
 		rf.sendVote()
 		fmt.Printf("****** %d vote to %d in term %d\n", rf.me, args.CandidateID, rf.CurrentTerm)
+	} else if args.CandidateTerm > rf.CurrentTerm {
+		rf.CurrentTerm = args.CandidateTerm
+		rf.VotedFor = args.CandidateID
+		reply.VoteGranted = true
+		// fmt.Printf("<<<<<<<<< %d become %d's follower in term %d %d >>>>>>>>\n", rf.me, args.CandidateID, rf.CurrentTerm, args.CandidateTerm)
+		rf.UpdateState(FOLLOWER)
 	}
 
 	rf.mu.Unlock()
@@ -270,10 +272,9 @@ func (rf *Raft) StartElection() {
 		}
 		go func(server int) {
 			reply := RequestVoteReply{}
-			fmt.Printf("#### term %d, machine %d send request to machine %d\n", rf.CurrentTerm, args.CandidateID, server)
+			fmt.Printf("#### term %d, machine %d send request to machine %d term %d\n", rf.CurrentTerm, args.CandidateID, server, args.CandidateTerm)
 			if rf.NodeState == CANDIDATE && rf.sendRequestVote(server, &args, &reply) {
 				if rf.NodeState != CANDIDATE && args.CandidateTerm != rf.CurrentTerm {
-					fmt.Println("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
 					return
 				}
 				rf.mu.Lock()
@@ -287,11 +288,14 @@ func (rf *Raft) StartElection() {
 					}
 				} else {
 					if reply.CurrentTerm > rf.CurrentTerm {
+						fmt.Println("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
 						rf.CurrentTerm = reply.CurrentTerm
 						rf.UpdateState(FOLLOWER)
 					}
 				}
 				rf.mu.Unlock()
+			} else {
+				fmt.Printf("^^^ machine %d call machine %d fail\n", rf.me, server)
 			}
 
 		}(i)
@@ -338,6 +342,7 @@ func (rf *Raft) UpdateState(state int32) {
 	switch state {
 	case FOLLOWER:
 		rf.NodeState = FOLLOWER
+		// rf.VoteCount = 0
 	case CANDIDATE:
 		rf.NodeState = CANDIDATE
 	case LEADER:
@@ -416,7 +421,7 @@ func RandElectionTime() time.Duration {
 
 func RandBoardcastTime() time.Duration {
 	rand.Seed(time.Now().UnixNano() / 1e6)
-	return time.Millisecond * time.Duration(rand.Intn(100)+100)
+	return time.Millisecond * time.Duration(rand.Intn(100)+50)
 }
 
 //
@@ -500,6 +505,12 @@ func (rf *Raft) ticker() {
 				rf.UpdateState(LEADER)
 				// fmt.Println("==== term", rf.CurrentTerm, rf.me, "become leader")
 				rf.mu.Unlock()
+				// case <-time.After(300 * time.Millisecond):
+				// 	fmt.Println("*** become follower again")
+				// 	rf.mu.Lock()
+				// 	rf.UpdateState(FOLLOWER)
+				// 	rf.mu.Unlock()
+
 			}
 
 		case LEADER:
