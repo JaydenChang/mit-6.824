@@ -106,9 +106,10 @@ func (rf *Raft) GetState() (int, bool) {
 	term = rf.CurrentTerm
 	isleader = rf.NodeState == LEADER
 	if isleader {
-		fmt.Println("`````````````````````````````````````````````` term", rf.CurrentTerm)
+		fmt.Printf("`````````````````````````````````````````````` term %d machine %d\n", rf.CurrentTerm, rf.me)
+		fmt.Println("^^^^^^ leader state", " term", rf.CurrentTerm, "machine", rf.me, "vote count", rf.VoteCount)
 	}
-	fmt.Println("^^^^^^ leader state", rf.NodeState, "term", rf.CurrentTerm, "id", rf.me, "vote count", rf.VoteCount)
+	// fmt.Println("^^^^^^ leader state", rf.NodeState, "term", rf.CurrentTerm, "machine", rf.me, "vote count", rf.VoteCount)
 
 	return term, isleader
 }
@@ -213,6 +214,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if args.CandidateTerm < rf.CurrentTerm {
 		reply.VoteGranted = false
 		reply.CurrentTerm = rf.CurrentTerm
@@ -222,21 +224,23 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	reply.CurrentTerm = rf.CurrentTerm
 	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateID {
-		fmt.Println(">>>>>>>>>>>>>>>>>> get vote")
+		// fmt.Printf(">>>>>>>>>>>>>>>>>> %d get vote\n", args.CandidateID)
 		rf.VotedFor = args.CandidateID
+		rf.CurrentTerm = args.CandidateTerm
 		reply.VoteGranted = true
 		// send vote
 		rf.sendVote()
-		fmt.Printf("****** %d vote to %d in term %d\n", rf.me, args.CandidateID, rf.CurrentTerm)
-	} else if args.CandidateTerm > rf.CurrentTerm {
+		fmt.Printf(">>>>>>>>>>>>>>>>>> %d vote to %d in term %d\n", rf.me, args.CandidateID, rf.CurrentTerm)
+	}
+	if args.CandidateTerm > rf.CurrentTerm {
 		rf.CurrentTerm = args.CandidateTerm
 		rf.VotedFor = args.CandidateID
 		reply.VoteGranted = true
+		fmt.Printf(">>>>>>>>>>>>>>>>>> %d vote to %d in term %d\n", rf.me, args.CandidateID, rf.CurrentTerm)
 		// fmt.Printf("<<<<<<<<< %d become %d's follower in term %d %d >>>>>>>>\n", rf.me, args.CandidateID, rf.CurrentTerm, args.CandidateTerm)
 		rf.UpdateState(FOLLOWER)
 	}
 
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -244,7 +248,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	if args.LeaderTerm < rf.CurrentTerm {
 		reply.Success = false
-		args.LeaderTerm = rf.CurrentTerm
+		// args.LeaderTerm = rf.CurrentTerm
+		reply.CurrentTerm = rf.CurrentTerm
 		return
 	}
 	if args.LeaderTerm > rf.CurrentTerm {
@@ -282,7 +287,7 @@ func (rf *Raft) StartElection() {
 					// rf.sendVote()
 					rf.VoteCount++
 					if rf.VoteCount > len(rf.peers)/2 {
-						fmt.Println("@@@ win election")
+						fmt.Printf("@@@ machine %d term %d win election\n", rf.me, rf.CurrentTerm)
 						rf.sendWinElection()
 						// return
 					}
@@ -419,10 +424,10 @@ func RandElectionTime() time.Duration {
 	return time.Millisecond * time.Duration(timeNum)
 }
 
-func RandBoardcastTime() time.Duration {
-	rand.Seed(time.Now().UnixNano() / 1e6)
-	return time.Millisecond * time.Duration(rand.Intn(100)+50)
-}
+// func RandBoardcastTime() time.Duration {
+// 	rand.Seed(time.Now().UnixNano() / 1e6)
+// 	return time.Millisecond * time.Duration(rand.Intn(100)+50)
+// }
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -505,11 +510,6 @@ func (rf *Raft) ticker() {
 				rf.UpdateState(LEADER)
 				// fmt.Println("==== term", rf.CurrentTerm, rf.me, "become leader")
 				rf.mu.Unlock()
-				// case <-time.After(300 * time.Millisecond):
-				// 	fmt.Println("*** become follower again")
-				// 	rf.mu.Lock()
-				// 	rf.UpdateState(FOLLOWER)
-				// 	rf.mu.Unlock()
 
 			}
 
@@ -517,7 +517,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			rf.BoardCastAppendEntries()
 			rf.mu.Unlock()
-			time.Sleep(50 * time.Microsecond)
+			time.Sleep(100 * time.Microsecond)
 
 		}
 	}
