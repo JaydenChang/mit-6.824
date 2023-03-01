@@ -21,6 +21,7 @@ import (
 	//	"bytes"
 
 	"fmt"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -88,27 +89,31 @@ type Raft struct {
 	NextIndex  []int
 	MatchIndex []int
 
-	VoteCount   int
-	NodeState   int32
-	HeartBeat   chan bool
-	WinElection chan bool
-	VoteChan    chan bool
+	VoteCount           int
+	NodeState           int32
+	HeartBeat           chan bool
+	WinElection         chan bool
+	LeaderToFollower    chan bool
+	CandidateToFollower chan bool
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
 	var isleader bool
 	// Your code here (2A).
-
+	if rf.VoteCount < len(rf.peers)/2 {
+		rf.NodeState = FOLLOWER
+	}
 	term = rf.CurrentTerm
 	isleader = rf.NodeState == LEADER
 	if isleader {
-		fmt.Printf("`````````````````````````````````````````````` term %d machine %d\n", rf.CurrentTerm, rf.me)
-		fmt.Println("^^^^^^ leader state", " term", rf.CurrentTerm, "machine", rf.me, "vote count", rf.VoteCount)
+		log.Printf("``````````````````````````````````` term %d machine %d votecount %d\n", rf.CurrentTerm, rf.me, rf.VoteCount)
 	}
+	fmt.Println("^^^^^^^^^^^^^^^^^^^^ leader state", "term", rf.CurrentTerm, "machine", rf.me, "vote count", rf.VoteCount)
 	// fmt.Println("^^^^^^ leader state", rf.NodeState, "term", rf.CurrentTerm, "machine", rf.me, "vote count", rf.VoteCount)
 
 	return term, isleader
@@ -213,32 +218,33 @@ type AppendEntriesReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	if args.CandidateTerm < rf.CurrentTerm {
-		reply.VoteGranted = false
 		reply.CurrentTerm = rf.CurrentTerm
-		fmt.Println("<<<<<<<<<<<<<< request fail at term", rf.CurrentTerm)
+		reply.VoteGranted = false
+		fmt.Printf("<<<<<<<<<< elder candidate fail to request vote, machine %d args.Term %d nowTerm %d\n", args.CandidateID, args.CandidateTerm, rf.CurrentTerm)
 		return
-	}
-	reply.VoteGranted = false
-	reply.CurrentTerm = rf.CurrentTerm
-	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateID {
-		// fmt.Printf(">>>>>>>>>>>>>>>>>> %d get vote\n", args.CandidateID)
-		rf.VotedFor = args.CandidateID
-		rf.CurrentTerm = args.CandidateTerm
-		reply.VoteGranted = true
-		// send vote
-		rf.sendVote()
-		fmt.Printf(">>>>>>>>>>>>>>>>>> %d vote to %d in term %d\n", rf.me, args.CandidateID, rf.CurrentTerm)
 	}
 	if args.CandidateTerm > rf.CurrentTerm {
 		rf.CurrentTerm = args.CandidateTerm
-		rf.VotedFor = args.CandidateID
+		rf.VotedFor = -1
+		if rf.NodeState == LEADER {
+			rf.setLeaderToFollower()
+			fmt.Printf("===== machine %d from %d to %d L->F state %d\n", rf.me, rf.CurrentTerm, args.CandidateTerm, rf.NodeState)
+		} else if rf.NodeState == CANDIDATE {
+			rf.setCandidateToFollower()
+			fmt.Printf("===== machine %d from %d to %d C->F state %d\n", rf.me, rf.CurrentTerm, args.CandidateTerm, rf.NodeState)
+		}
+	}
+
+	reply.CurrentTerm = rf.CurrentTerm
+	reply.VoteGranted = false
+	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateID {
 		reply.VoteGranted = true
-		fmt.Printf(">>>>>>>>>>>>>>>>>> %d vote to %d in term %d\n", rf.me, args.CandidateID, rf.CurrentTerm)
-		// fmt.Printf("<<<<<<<<< %d become %d's follower in term %d %d >>>>>>>>\n", rf.me, args.CandidateID, rf.CurrentTerm, args.CandidateTerm)
-		rf.UpdateState(FOLLOWER)
+		rf.VotedFor = args.CandidateID
+		// send vote
+		fmt.Printf(">>>>>>>>>>>> term %d machine %d vote to %d in term %d\n", rf.CurrentTerm, rf.me, args.CandidateID, args.CandidateTerm)
 	}
 
 }
@@ -247,99 +253,70 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if args.LeaderTerm < rf.CurrentTerm {
-		reply.Success = false
-		// args.LeaderTerm = rf.CurrentTerm
 		reply.CurrentTerm = rf.CurrentTerm
+		reply.Success = false
 		return
 	}
 	if args.LeaderTerm > rf.CurrentTerm {
 		rf.CurrentTerm = args.LeaderTerm
-		rf.UpdateState(FOLLOWER)
+		rf.VotedFor = args.LeaderID
+		fmt.Printf("!!!!! term %d machine %d turn machine %d state %d to follower\n", args.LeaderTerm, args.LeaderID, rf.me, rf.NodeState)
+		if rf.NodeState == CANDIDATE {
+			rf.setCandidateToFollower()
+		} else if rf.NodeState == LEADER {
+			rf.setLeaderToFollower()
+		}
 	}
-	reply.CurrentTerm = rf.CurrentTerm
-	// rf.CurrentTerm = reply.CurrentTerm
 	rf.sendHeartbeat()
+	reply.CurrentTerm = rf.CurrentTerm
 }
 
 func (rf *Raft) StartElection() {
+	if rf.NodeState != CANDIDATE {
+		return
+	}
 	rf.mu.Lock()
 	rf.VotedFor = rf.me
 	rf.VoteCount = 1
 	rf.CurrentTerm++
-	rf.mu.Unlock()
 	args := RequestVoteArgs{
 		CandidateTerm: rf.CurrentTerm,
 		CandidateID:   rf.me,
 	}
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		go func(server int) {
-			reply := RequestVoteReply{}
-			fmt.Printf("#### term %d, machine %d send request to machine %d term %d\n", rf.CurrentTerm, args.CandidateID, server, args.CandidateTerm)
-			if rf.NodeState == CANDIDATE && rf.sendRequestVote(server, &args, &reply) {
-				if rf.NodeState != CANDIDATE && args.CandidateTerm != rf.CurrentTerm {
-					return
-				}
-				rf.mu.Lock()
-				if reply.VoteGranted {
-					// rf.sendVote()
-					rf.VoteCount++
-					if rf.VoteCount > len(rf.peers)/2 {
-						fmt.Printf("@@@ machine %d term %d win election\n", rf.me, rf.CurrentTerm)
-						rf.sendWinElection()
-						// return
-					}
-				} else {
-					if reply.CurrentTerm > rf.CurrentTerm {
-						fmt.Println("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
-						rf.CurrentTerm = reply.CurrentTerm
-						rf.UpdateState(FOLLOWER)
-					}
-				}
-				rf.mu.Unlock()
-			} else {
-				fmt.Printf("^^^ machine %d call machine %d fail\n", rf.me, server)
-			}
-
-		}(i)
+		reply := RequestVoteReply{}
+		// fmt.Printf("#### term %d, machine %d send request to machine %d term %d\n", rf.CurrentTerm, args.CandidateID, i, args.CandidateTerm)
+		go rf.sendRequestVote(i, &args, &reply)
 	}
 }
 
 func (rf *Raft) BoardCastAppendEntries() {
+	if rf.NodeState != LEADER {
+		return
+	}
+	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		LeaderID:   rf.me,
 		LeaderTerm: rf.CurrentTerm,
 	}
-
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		go func(server int) {
-			reply := AppendEntriesReply{}
-			if rf.NodeState != LEADER {
-				return
-			}
-			if rf.sendAppendEntries(server, &args, &reply) {
-				rf.mu.Lock()
-				if rf.NodeState != LEADER || rf.CurrentTerm > reply.CurrentTerm || rf.CurrentTerm != args.LeaderTerm {
-					return
-				}
-				if rf.CurrentTerm < reply.CurrentTerm {
-					rf.CurrentTerm = reply.CurrentTerm
-					rf.UpdateState(FOLLOWER)
-				}
-				rf.mu.Unlock()
-			}
-		}(i)
+		reply := AppendEntriesReply{}
+		go rf.sendAppendEntries(i, &args, &reply)
+
 	}
 }
 
 func (rf *Raft) UpdateState(state int32) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.NodeState == state {
 		return
 	}
@@ -347,7 +324,7 @@ func (rf *Raft) UpdateState(state int32) {
 	switch state {
 	case FOLLOWER:
 		rf.NodeState = FOLLOWER
-		// rf.VoteCount = 0
+		rf.VoteCount = 0
 	case CANDIDATE:
 		rf.NodeState = CANDIDATE
 	case LEADER:
@@ -357,8 +334,6 @@ func (rf *Raft) UpdateState(state int32) {
 	}
 	// fmt.Printf(">>> term %d update state from %d to %d from %d\n", rf.CurrentTerm, old_state, rf.NodeState, rf.me)
 }
-
-// func (rf *Raft) Broadcast() {}
 
 //
 // example code to send a RequestVote RPC to a server.
@@ -389,14 +364,48 @@ func (rf *Raft) UpdateState(state int32) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+// 原来是有bool返回值的
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	if !ok {
+		return
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.NodeState != CANDIDATE || rf.CurrentTerm > reply.CurrentTerm {
+		return
+	}
+	if reply.CurrentTerm > rf.CurrentTerm {
+		fmt.Printf("!!!! update machine %d term from %d to %d\n", rf.me, rf.CurrentTerm, reply.CurrentTerm)
+		rf.CurrentTerm = reply.CurrentTerm
+		rf.VotedFor = -1
+		rf.setCandidateToFollower()
+	}
+	if reply.VoteGranted && rf.NodeState == CANDIDATE {
+		rf.VoteCount++
+		if rf.VoteCount > len(rf.peers)/2 {
+			fmt.Printf("@@@ machine %d term %d win election state: %d\n", rf.me, rf.CurrentTerm, rf.NodeState)
+			rf.sendWinElection()
+		}
+	}
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if !ok {
+		return
+	}
+	if rf.NodeState != LEADER || rf.CurrentTerm > reply.CurrentTerm || rf.CurrentTerm != args.LeaderTerm {
+		return
+	}
+	if rf.CurrentTerm < reply.CurrentTerm {
+		fmt.Printf("!!!!!!!!!!!!!!! update machine %d term from %d to %d\n", rf.me, rf.CurrentTerm, reply.CurrentTerm)
+		rf.CurrentTerm = reply.CurrentTerm
+		rf.VotedFor = -1
+		rf.setLeaderToFollower()
+	}
 }
 
 func (rf *Raft) sendHeartbeat() {
@@ -410,19 +419,28 @@ func (rf *Raft) sendWinElection() {
 		rf.WinElection <- true
 	}()
 }
-
-func (rf *Raft) sendVote() {
+func (rf *Raft) setLeaderToFollower() {
 	go func() {
-		rf.VoteChan <- true
+		rf.LeaderToFollower <- true
+	}()
+}
+
+func (rf *Raft) setCandidateToFollower() {
+	go func() {
+		rf.CandidateToFollower <- true
+
 	}()
 }
 
 func RandElectionTime() time.Duration {
 	rand.Seed(time.Now().UnixNano() / 1e6)
-	timeNum := rand.Intn(150) + 200
-	// fmt.Println( timeNum)
-	return time.Millisecond * time.Duration(timeNum)
+	return time.Millisecond * time.Duration(rand.Intn(150)+150)
 }
+
+// func ReElectionTime() time.Duration {
+// 	rand.Seed(time.Now().UnixNano() / 1e6)
+// 	return time.Millisecond * time.Duration(rand.Intn(200)+300)
+// }
 
 // func RandBoardcastTime() time.Duration {
 // 	rand.Seed(time.Now().UnixNano() / 1e6)
@@ -484,40 +502,40 @@ func (rf *Raft) ticker() {
 		// time.Sleep().
 
 		// 先监听心跳再监听选举时间
-		// switch rf.NodeState {
-		switch atomic.LoadInt32(&rf.NodeState) {
+		rf.mu.Lock()
+		state := rf.NodeState
+		rf.mu.Unlock()
+
+		switch state {
 		case FOLLOWER:
 			select {
 			case <-rf.HeartBeat:
-				// fmt.Println("------ follower get heartbeat")
 			case <-time.After(RandElectionTime()):
-				rf.mu.Lock()
 				rf.UpdateState(CANDIDATE)
-				// fmt.Println(atomic.LoadInt32(&rf.NodeState))
-				rf.mu.Unlock()
+				go rf.StartElection()
 			}
 		case CANDIDATE:
 			select {
-			case <-rf.HeartBeat:
-				// fmt.Println("----- candidate get heartbeat")
-				rf.mu.Lock()
-				rf.UpdateState(FOLLOWER)
-				rf.mu.Unlock()
-			case <-time.After(RandElectionTime()):
-				rf.StartElection()
 			case <-rf.WinElection:
-				rf.mu.Lock()
 				rf.UpdateState(LEADER)
-				// fmt.Println("==== term", rf.CurrentTerm, rf.me, "become leader")
-				rf.mu.Unlock()
+				go rf.BoardCastAppendEntries()
+			case <-rf.CandidateToFollower:
+				rf.UpdateState(FOLLOWER)
+				fmt.Printf("!!!!!======== machine %d term %d state %d\n", rf.me, rf.CurrentTerm, rf.NodeState)
+			case <-rf.HeartBeat:
+				rf.UpdateState(FOLLOWER)
+			case <-time.After(RandElectionTime()):
+				go rf.StartElection()
 
 			}
 
 		case LEADER:
-			rf.mu.Lock()
-			rf.BoardCastAppendEntries()
-			rf.mu.Unlock()
-			time.Sleep(100 * time.Microsecond)
+			select {
+			case <-rf.LeaderToFollower:
+				rf.UpdateState(FOLLOWER)
+			case <-time.After(50 * time.Millisecond):
+				go rf.BoardCastAppendEntries()
+			}
 
 		}
 	}
@@ -546,7 +564,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.NodeState = FOLLOWER
 	rf.HeartBeat = make(chan bool)
 	rf.WinElection = make(chan bool)
-	rf.VoteChan = make(chan bool)
+	rf.LeaderToFollower = make(chan bool)
+	rf.CandidateToFollower = make(chan bool)
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
