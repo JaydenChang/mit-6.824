@@ -59,6 +59,7 @@ func (c *Coordinator) GetTask(args *TaskArgs, reply *TaskReply) error {
 			mapTask, ok := <-c.MapTask
 			if ok {
 				reply.XTask = mapTask
+				c.MapTaskTime.Store(reply.XTask.MapID, TimeStamp{time.Now().Unix(), false})
 			}
 			reply.CurMapNum = len(c.MapTask)
 		} else {
@@ -70,6 +71,7 @@ func (c *Coordinator) GetTask(args *TaskArgs, reply *TaskReply) error {
 			reduceTask, ok := <-c.ReduceTask
 			if ok {
 				reply.XTask = reduceTask
+				c.ReduceTaskTime.Store(reply.XTask.ReduceID, TimeStamp{time.Now().Unix(), false})
 			}
 			reply.CurReduceNum = len(c.ReduceTask)
 		} else {
@@ -97,7 +99,7 @@ func (c *Coordinator) FinishTask(args *Task, reply *TaskReply) error {
 			atomic.StoreInt32(&c.State, 1)
 			for i := 0; i < c.NumReduceTask; i++ {
 				c.ReduceTask <- Task{ReduceID: i}
-				c.ReduceTaskTime.Store(i, TimeStamp{time.Now().Unix(), false})
+				// c.ReduceTaskTime.Store(i, TimeStamp{time.Now().Unix(), false})
 			}
 		}
 	} else if GetMapSize(&c.ReduceTaskTime) != c.NumReduceTask {
@@ -120,16 +122,24 @@ func (c *Coordinator) TimeTick() {
 	if state == 0 {
 		for i := 0; i < c.NumMapTask; i++ {
 
-			tempTask, _ := c.MapTaskTime.Load(i)
+			tempTask, ok := c.MapTaskTime.Load(i)
+			if !ok {
+				continue
+			}
 			if !tempTask.(TimeStamp).Finish && timeNow-tempTask.(TimeStamp).TimeNow > 10 {
+				// fmt.Println("restart map:", i)
 				c.MapTask <- Task{MapID: i, FileName: c.files[i]}
 				c.MapTaskTime.Store(i, TimeStamp{time.Now().Unix(), false})
 			}
 		}
 	} else if state == 1 {
 		for i := 0; i < c.NumReduceTask; i++ {
-			tempTask, _ := c.ReduceTaskTime.Load(i)
+			tempTask, ok := c.ReduceTaskTime.Load(i)
+			if !ok {
+				continue
+			}
 			if !tempTask.(TimeStamp).Finish && timeNow-tempTask.(TimeStamp).TimeNow > 10 {
+				// fmt.Println("restart reduce:", i)
 				c.ReduceTask <- Task{ReduceID: i}
 				c.ReduceTaskTime.Store(i, TimeStamp{time.Now().Unix(), false})
 			}
@@ -179,7 +189,7 @@ func (c *Coordinator) Done() bool {
 		ret = true
 	}
 
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	// Your code here.
 
 	return ret
@@ -208,7 +218,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			MapID:    id,
 			TaskType: 0,
 		}
-		c.MapTaskTime.Store(id, TimeStamp{time.Now().Unix(), false})
+		// c.MapTaskTime.Store(id, TimeStamp{time.Now().Unix(), false})
 
 	}
 

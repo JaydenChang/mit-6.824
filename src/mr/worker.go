@@ -10,7 +10,6 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"time"
 )
 
 //
@@ -64,6 +63,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		if state == 0 && reply.CurMapNum >= 0 {
 			nReduce := reply.NumReduceTask
 			file, err := os.Open(filename)
+			// fmt.Println("map:", reply.XTask.MapID)
 			if err != nil {
 				log.Fatalf("cannot open file %v", filename)
 			}
@@ -101,7 +101,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			NumMapTask := reply.NumMapTask
 			ReduceID := reply.XTask.ReduceID
 			intermediate := []KeyValue{}
-
+			// fmt.Println("reduce:", ReduceID)
 			for i := 0; i < NumMapTask; i++ {
 				intermediateName := "mr-" + strconv.Itoa(i) + "-" + strconv.Itoa(ReduceID)
 				intermediateFile, err := os.Open(intermediateName)
@@ -148,8 +148,10 @@ func Worker(mapf func(string, string) []KeyValue,
 			CallFinishTask(&reply.XTask, &reply)
 		} else if state == 2 {
 			break
+		} else {
+			continue
 		}
-		time.Sleep(time.Second)
+		// time.Sleep(time.Second)
 	}
 
 }
