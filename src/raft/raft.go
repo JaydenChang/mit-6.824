@@ -84,13 +84,13 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
-	// rf.mu.Lock()
+	rf.mu.Lock()
 	isleader = rf.state == LEADER
 	term = rf.currentTerm
 	if isleader {
 		fmt.Println(">>>>>>>>>>>>>>>>>>>> node", rf.me, "term", rf.currentTerm, "turn leader")
 	}
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 	// Your code here (2A).
 	return term, isleader
 }
@@ -425,7 +425,7 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-
+		// time.Sleep(time.Millisecond * 500)
 	}
 }
 
