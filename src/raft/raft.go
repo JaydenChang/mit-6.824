@@ -57,17 +57,16 @@ type ApplyMsg struct {
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu              sync.Mutex          // Lock to protect shared access to this peer's state
-	peers           []*labrpc.ClientEnd // RPC end points of all peers
-	persister       *Persister          // Object to hold this peer's persisted state
-	me              int                 // this peer's index into peers[]
-	dead            int32               // set by Kill()
-	state           int32               // 0 follower 1 candidate 2 leader
-	currentTerm     int
-	votedFor        int
-	votedCount      int
-	heartBeatChan   chan bool
-	voteRequestChan chan bool
+	mu          sync.Mutex          // Lock to protect shared access to this peer's state
+	peers       []*labrpc.ClientEnd // RPC end points of all peers
+	persister   *Persister          // Object to hold this peer's persisted state
+	me          int                 // this peer's index into peers[]
+	dead        int32               // set by Kill()
+	state       int32               // 0 follower 1 candidate 2 leader
+	currentTerm int
+	votedFor    int
+	votedCount  int
+	changeState chan bool
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -199,8 +198,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		fmt.Println("candidate ", args.CandidateID, "candidateTerm", args.CandidateTerm, "request vote from", rf.me, "term", rf.currentTerm, "failed")
 		return
 	}
-	rf.voteRequestChan <- true
-	// rf.state = FOLLOWER
+	rf.changeState <- true
+	rf.state = FOLLOWER
 	rf.currentTerm = args.CandidateTerm
 	rf.votedFor = args.CandidateID
 	reply.VoteGranted = true
@@ -214,8 +213,6 @@ func (rf *Raft) StartElection() {
 		rf.mu.Unlock()
 		return
 	}
-	rf.votedCount = 1
-	rf.currentTerm++
 	fmt.Println("----  node ", rf.me, "term", rf.currentTerm, "vote for", rf.votedFor, "start election")
 	args := RequestVoteArgs{
 		CandidateTerm: rf.currentTerm,
@@ -234,24 +231,23 @@ func (rf *Raft) StartElection() {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.state != LEADER {
-		return
-	}
 	reply.CurrentTerm = rf.currentTerm
 	if rf.currentTerm > args.LeaderTerm {
-		// reply.CurrentTerm = rf.currentTerm
 		return
 	}
+	rf.changeState <- true
+	rf.state = FOLLOWER
 	rf.currentTerm = args.LeaderTerm
 	reply.CurrentTerm = rf.currentTerm
-	rf.heartBeatChan <- true
 }
 
 func (rf *Raft) SendHeartBeat() {
+	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		LeaderTerm: rf.currentTerm,
 		LeaderID:   rf.me,
 	}
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -294,22 +290,20 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	// fmt.Println("--- node", rf.me, "term", rf.currentTerm, "get ticket from", server, reply.VoteGranted)
-	// fmt.Println("----- node",rf.me, "rf.term",rf.currentTerm, "reply.term",reply.CurrentTerm)
-	if reply.CurrentTerm > rf.me {
-		rf.currentTerm = reply.CurrentTerm
-		rf.state = FOLLOWER
-		rf.votedCount = 0
-		return ok
-	} else if rf.currentTerm == reply.CurrentTerm {
+	if reply.CurrentTerm >= rf.currentTerm {
+		if reply.CurrentTerm > rf.currentTerm {
+			rf.changeState <- true
+			rf.currentTerm = reply.CurrentTerm
+			rf.state = FOLLOWER
+		}
 		return ok
 	}
 	if reply.VoteGranted {
 		rf.votedCount++
-	}
-	if rf.votedCount > len(rf.peers)/2 {
-		rf.state = LEADER
+		if rf.votedCount > len(rf.peers)/2 {
+			rf.changeState <- true
+			rf.state = LEADER
+		}
 	}
 	return ok
 }
@@ -319,6 +313,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.currentTerm < reply.CurrentTerm {
+		rf.changeState<-true
 		rf.currentTerm = reply.CurrentTerm
 		rf.state = FOLLOWER
 		return ok
@@ -394,44 +389,32 @@ func (rf *Raft) ticker() {
 			rf.votedCount = 0
 			rf.mu.Unlock()
 			select {
-			case <-rf.heartBeatChan:
-			case <-rf.voteRequestChan:
+			case <-rf.changeState:
 			case <-time.After(ElectionTimer()):
 				rf.mu.Lock()
 				rf.state = CANDIDATE
-				// rf.votedFor = rf.me
 				rf.mu.Unlock()
-				rf.StartElection()
 			}
 
 			// time.Sleep(ElectionTimer())
 		case CANDIDATE:
+			rf.mu.Lock()
+			rf.state = CANDIDATE
+			rf.votedFor = rf.me
+			rf.votedCount = 1
+			rf.currentTerm++
+			rf.mu.Unlock()
+			go rf.StartElection()
 			select {
-			case <-rf.voteRequestChan:
-				rf.mu.Lock()
-				rf.state = FOLLOWER
-				rf.mu.Unlock()
-			case <-rf.heartBeatChan:
-				rf.mu.Lock()
-				rf.state = FOLLOWER
-				rf.mu.Unlock()
+			case <-rf.changeState:
 			case <-time.After(ElectionTimer()):
-				rf.StartElection()
 			}
 			// time.Sleep(ElectionTimer())
 		case LEADER:
+			go rf.SendHeartBeat()
 			select {
-			case <-time.After(HeartbeatTimer()):
-				rf.SendHeartBeat()
-			case <-rf.voteRequestChan:
-				rf.mu.Lock()
-				rf.state = FOLLOWER
-				rf.mu.Unlock()
-			case <-rf.heartBeatChan:
-				rf.mu.Lock()
-				rf.state = FOLLOWER
-				rf.mu.Unlock()
-
+			case <-time.After(time.Millisecond * 40):
+			case <-rf.changeState:
 			}
 			// time.Sleep(HeartbeatTimer())
 		}
@@ -457,12 +440,11 @@ func (rf *Raft) ticker() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
-		state:           FOLLOWER,
-		currentTerm:     0,
-		votedFor:        me,
-		votedCount:      0,
-		heartBeatChan:   make(chan bool),
-		voteRequestChan: make(chan bool),
+		state:       FOLLOWER,
+		currentTerm: 0,
+		votedFor:    me,
+		votedCount:  0,
+		changeState: make(chan bool, 10),
 	}
 	rf.peers = peers
 	rf.persister = persister
