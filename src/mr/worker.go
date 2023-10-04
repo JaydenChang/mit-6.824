@@ -10,6 +10,10 @@ import (
 	"os"
 	"sort"
 	"strconv"
+<<<<<<< HEAD
+=======
+	"time"
+>>>>>>> bbdbefc2d2f7e8cc4afb11858717bb51a031aed2
 )
 
 //
@@ -44,6 +48,104 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	for {
+		args := TaskRequest{}
+		reply := TaskReply{}
+		CallGetTask(&args, &reply)
+		CurNumMapTask := reply.CurNumMapTask
+		CurNumReduceTask := reply.CurNumReduceTask
+		state := reply.State
+		if state == 0 && CurNumMapTask >= 0 {
+			filename := reply.XTask.FileName
+			id := strconv.Itoa(reply.XTask.IDMap)
+			file, err := os.Open(filename)
+			if err != nil {
+				log.Fatalf("cannot open map file %v", filename)
+			}
+			content, err := ioutil.ReadAll(file)
+			if err != nil {
+				log.Fatalf("cannot read map file %v", filename)
+			}
+			file.Close()
+			kva := mapf(filename, string(content))
+
+			bucket := make([][]KeyValue, reply.NumReduceTask)
+
+			for _, kv := range kva {
+				num := ihash(kv.Key) % reply.NumReduceTask
+				bucket[num] = append(bucket[num], kv)
+			}
+			for i := 0; i < reply.NumReduceTask; i++ {
+				sort.Sort(ByKey(bucket[i]))
+				tempFile, err := ioutil.TempFile("", "mr-map-*")
+				if err != nil {
+					log.Fatalf("error creating temp file %v", tempFile.Name())
+				}
+				enc := json.NewEncoder(tempFile)
+
+				err = enc.Encode(bucket[i])
+				if err != nil {
+					log.Fatalf("error encoding\n")
+				}
+				tempFile.Close()
+				os.Rename(tempFile.Name(), "mr-"+id+"-"+strconv.Itoa(i))
+			}
+			CallFinishTask(&reply.XTask)
+		} else if state == 1 && CurNumReduceTask >= 0 {
+			id := strconv.Itoa(reply.XTask.IDReduce)
+			intermediate := []KeyValue{}
+			// X := reply.XTask.IDMap
+			for i := 0; i < reply.NumMapTask; i++ {
+				mapFileName := "mr-" + strconv.Itoa(i) + "-" + id
+				inputFile, err := os.Open(mapFileName)
+				if err != nil {
+					log.Fatalf("error opening map file: %v\n", mapFileName)
+				}
+
+				dec := json.NewDecoder(inputFile)
+				for {
+					var kv []KeyValue
+					// var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					// intermediate = append(intermediate, kv)
+					intermediate = append(intermediate, kv...)
+				}
+			}
+			sort.Sort(ByKey(intermediate))
+			oname := "mr-out-" + id
+			tempReduceFile, err := ioutil.TempFile("", "mr-reduce-*")
+			if err != nil {
+				log.Fatalf("Error creating temp file: %v", tempReduceFile)
+			}
+
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+				fmt.Fprintf(tempReduceFile, "%v %v\n", intermediate[i].Key, output)
+				i = j
+			}
+			tempReduceFile.Close()
+			os.Rename(tempReduceFile.Name(), oname)
+
+			CallFinishTask(&reply.XTask)
+		} else if state == 2 {
+			break
+		} else {
+			continue
+		}
+		time.Sleep(time.Second)
+
+	}
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
@@ -185,6 +287,7 @@ func CallExample() {
 	}
 }
 
+<<<<<<< HEAD
 func CallGetTask(args *TaskArgs, reply *TaskReply) {
 	// args := TaskArgs{}
 	// args.Msg = "hello\n"
@@ -200,6 +303,39 @@ func CallFinishTask(args *Task, reply *TaskReply) {
 
 	if !ok {
 		fmt.Printf("call finish failed!\n")
+=======
+func CallGetTask(args *TaskRequest, reply *TaskReply) {
+	// call("Coordinator.GetTask", &args, &reply)
+	ok := call("Coordinator.GetTask", &args, &reply)
+	if ok {
+		fmt.Println("call get task ok")
+	} else {
+		fmt.Println("call get task failed")
+	}
+}
+
+func CallFinishTask(args *Task) {
+	// args := TaskRequest{}
+	reply := TaskReply{}
+	// call("Coordinator.FinishTask", &args, &reply)
+	ok := call("Coordinator.FinishTask", &args, &reply)
+	if ok {
+		fmt.Println("call finish task ok")
+	} else {
+		fmt.Println("call finish task failed")
+	}
+}
+
+func CallEndTask() {
+	args := TaskRequest{}
+	reply := TaskReply{}
+	// call("Coordinator.FinishTask", &args, &reply)
+	ok := call("Coordinator.FinishTask", &args, &reply)
+	if ok {
+		fmt.Println("call end task ok")
+	} else {
+		fmt.Println("call end task failed")
+>>>>>>> bbdbefc2d2f7e8cc4afb11858717bb51a031aed2
 	}
 }
 

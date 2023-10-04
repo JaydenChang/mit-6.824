@@ -29,6 +29,7 @@ type TaskArgs struct {
 	Msg string
 }
 
+<<<<<<< HEAD
 type TaskReply struct {
 	XTask         Task
 	FileName      string
@@ -39,6 +40,20 @@ type TaskReply struct {
 }
 
 // Add your RPC definitions here.
+=======
+type TaskRequest struct {
+	X int
+}
+
+type TaskReply struct {
+	XTask            Task
+	NumMapTask       int
+	NumReduceTask    int
+	State            int32
+	CurNumMapTask    int
+	CurNumReduceTask int
+}
+>>>>>>> bbdbefc2d2f7e8cc4afb11858717bb51a031aed2
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

@@ -53,6 +53,11 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct {
+	Command interface{}
+	Term    int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -70,7 +75,22 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	CurrentTerm int
+	VotedFor    int
+	Log         []*LogEntry
 
+	CommitIndex int
+	LastApplied int
+
+	NextIndex  []int
+	MatchIndex []int
+
+	VoteCount           int
+	NodeState           int32
+	HeartBeat           chan bool
+	WinElection         chan bool
+	LeaderToFollower    chan bool
+	CandidateToFollower chan bool
 }
 
 const (
@@ -82,7 +102,6 @@ const (
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
 	var isleader bool
 	rf.mu.Lock()
@@ -94,6 +113,8 @@ func (rf *Raft) GetState() (int, bool) {
 	fmt.Println("--------- node", rf.me, "state", rf.currentTerm, "state", rf.state, "ticket", rf.votedCount)
 	rf.mu.Unlock()
 	// Your code here (2A).
+	// fmt.Println("^^^^^^ leader state", rf.NodeState, "term", rf.CurrentTerm, "machine", rf.me, "vote count", rf.VoteCount)
+
 	return term, isleader
 }
 
@@ -163,6 +184,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	CandidateTerm int
 	CandidateID   int
+	LastLogIndex  int
+	LastLogTerm   int
 }
 
 //
@@ -176,12 +199,17 @@ type RequestVoteReply struct {
 }
 
 type AppendEntriesArgs struct {
-	LeaderTerm int
-	LeaderID   int
+	LeaderTerm   int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []*LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
 	CurrentTerm int
+	Success     bool
 }
 
 //
@@ -203,8 +231,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.currentTerm = args.CandidateTerm
 	rf.votedFor = args.CandidateID
 	reply.VoteGranted = true
-	// reply.CurrentTerm = rf.currentTerm
-	// fmt.Println("candidate ", args.CandidateID, " request vote from", rf.me, "success", reply.VoteGranted)
 }
 
 func (rf *Raft) StartElection() {
@@ -237,6 +263,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	rf.changeState <- true
 	rf.state = FOLLOWER
+	rf.votedFor = args.LeaderID
 	rf.currentTerm = args.LeaderTerm
 	reply.CurrentTerm = rf.currentTerm
 }
@@ -286,10 +313,17 @@ func (rf *Raft) SendHeartBeat() {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
+// 原来是有bool返回值的
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	if !ok {
+		return ok
+	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if rf.state != CANDIDATE {
+		return ok
+	}
 	if reply.CurrentTerm >= rf.currentTerm {
 		if reply.CurrentTerm > rf.currentTerm {
 			rf.changeState <- true
@@ -310,10 +344,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if !ok {
+		return ok
+	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.currentTerm < reply.CurrentTerm {
-		rf.changeState<-true
+		rf.changeState <- true
 		rf.currentTerm = reply.CurrentTerm
 		rf.state = FOLLOWER
 		return ok
@@ -399,7 +436,6 @@ func (rf *Raft) ticker() {
 			// time.Sleep(ElectionTimer())
 		case CANDIDATE:
 			rf.mu.Lock()
-			rf.state = CANDIDATE
 			rf.votedFor = rf.me
 			rf.votedCount = 1
 			rf.currentTerm++
@@ -449,7 +485,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.CurrentTerm = 0
+	rf.VotedFor = -1
+	rf.VoteCount = 0
+	rf.NodeState = FOLLOWER
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
